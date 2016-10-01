@@ -1,15 +1,17 @@
 from pymongo import MongoClient
+import pandas as pd
+
 import requests
 from bs4 import BeautifulSoup
 import re
 from sqlalchemy import *
-import pandas as pd
 import os
+import time
 
 
-class TransfermarktSpider():
+class TransfermarktScraper():
     """
-    A Spider for Transfermarkt.com
+    A Scraper for Transfermarkt.com
     """
 
     def __init__(self):
@@ -66,13 +68,18 @@ class TransfermarktSpider():
                         )
 
         self.metadata.create_all(self.engine)
-        print("Tables Created")
+        print("Database Created")
 
     def __check_db(self):
-        if os.path.isfile(self.DBPATH + self.DBFILE):
-            files = os.listdir(self.DBPATH)
-
-            self.DBFILE = 'TransferDB_{}'.format(num + 1)
+        """
+        :return:
+        """
+        files = os.listdir(self.DBPATH)
+        if any([True for file in files if re.match("(TransferDB_.*)",file)]):
+            num = lambda x: max([file[-1] for file in files if re.match("(TransferDB_.*)",file)])
+            self.DBFILE = 'TransferDB_{}'.format(num(files) + 1)
+        else:
+            self.DBFILE = 'TransferDB_0'
 
     def __store_db(self, table, data):
         """
@@ -115,40 +122,36 @@ class TransfermarktSpider():
         :param site:
         :return:
         """
-        page = self.setting.get(site)
-        html = page.content
-        return BeautifulSoup(html, 'lxml')
+        retries = 3
+        for i in range(retries):
+            try:
+                page = self.setting.get(site)
+                html = page.content
+                return BeautifulSoup(html, 'lxml')
+            except:
+                if i + 1 == retries:
+                    raise
+                else:
+                    print('Exception occurred, retry number {}, 10 sleep seconds'.format(i))
+                    time.sleep(10)
 
-    def parse_structure(self):
-        """
-        :return:
-        """
-        while len(self.sites)>0:
-            site = self.sites.pop()
-            if site[0] != None:
-                try:
-                    soup = self.getPage(site[1])
-                except (RuntimeError, TypeError, NameError):
-                    soup = self.getPage(site[1])
-                links = self.parse_manager(soup,site[0])
-                self.sites.extend(links) if links else None
-        print('End')
         self.connection.close()
 
-    def parse_manager(self,soup,page_type):
+
+    def __parse_manager(self,soup,page_type):
         """
         :param soup:
         :param page_type:
         :return:
         """
         if page_type == 'league':
-            return self.competition_parse(soup)
+            return self.__competition_parse(soup)
         elif page_type == 'club':
-            return self.club_parse(soup)
+            return self.__club_parse(soup)
         elif page_type == 'player':
-            return self.player_parse(soup)
+            return self.__player_parse(soup)
 
-    def competition_parse(self, soup):
+    def __competition_parse(self, soup):
         """
         :param soup:
         :return:
@@ -169,12 +172,12 @@ class TransfermarktSpider():
             Leagues["total_value"] = float('.'.join(re.findall('\d+', league.contents[4].string)))
             Leagues['year'] = 2016
             links.append(('club',Leagues["league_link"]))
-            self.store_db('leagues',Leagues)
+            self.__store_db('leagues',Leagues)
             print(Leagues['league_name'] + ' Loadded')
 
         return links
 
-    def club_parse(self,soup):
+    def __club_parse(self,soup):
         """
         :param team_soup:
         :return:
@@ -199,14 +202,14 @@ class TransfermarktSpider():
             Teams["year"] = 2016
             Teams["position_league"] = None
             links.append(('player',Teams["club_link"]))
-            self.store_db('teams', Teams)
+            self.__store_db('teams', Teams)
             print(Teams['league_name'] + ' ' + Teams["club_name"] + ' Loadded')
 
         soup2 = soup.find_all("div", class_="spielername-profil")
         Teams["league_name"] = soup2[0].string.replace("\r","").replace("\n","").replace("\t","")
         return links
 
-    def player_parse(self, soup):
+    def __player_parse(self, soup):
         """
         :param soup:
         :return:
@@ -229,10 +232,26 @@ class TransfermarktSpider():
             Players["nationality"] = player.find_all("td")[7].img["alt"]
             Players["year"] = 2016
             links.append((None,Players["player_link"]))
-            self.store_db('players', Players)
+            self.__store_db('players', Players)
             print(Players["club_name"] + ' ' + Players["player_name"] + ' Loadded')
 
         return links
+
+    def parse_structure(self):
+        """
+        :return:
+        """
+        self.__create_db()
+        try:
+            while len(self.sites)>0:
+                site = self.sites.pop()
+                if site[0] != None:
+                    soup = self.__getPage(site[1])
+                    links = self.__parse_manager(soup,site[0])
+                    self.sites.extend(links) if links else None
+        finally:
+            print('End, all the records where stored')
+            self.connection.close()
 
 
 #Getting links from starting page
